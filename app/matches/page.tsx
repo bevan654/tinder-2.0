@@ -21,6 +21,7 @@ export default function MatchesPage() {
   const [matches, setMatches] = useState<MatchWithProfile[]>([])
   const [loading, setLoading] = useState(true)
   const [userId, setUserId] = useState<string | null>(null)
+  const [unmatchingId, setUnmatchingId] = useState<string | null>(null)
   const router = useRouter()
   const supabase = createClient()
 
@@ -84,6 +85,72 @@ export default function MatchesPage() {
     }
   }
 
+  const handleUnmatch = async (matchId: string, e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+
+    if (!confirm('Are you sure you want to unmatch? This will delete all messages and you may see each other again.')) {
+      return
+    }
+
+    setUnmatchingId(matchId)
+
+    try {
+      const matchToUnmatch = matches.find(m => m.id === matchId)
+      if (!matchToUnmatch || !userId) {
+        throw new Error('Match not found')
+      }
+
+      // Delete messages first
+      const { error: messagesError } = await supabase
+        .from('messages')
+        .delete()
+        .eq('match_id', matchId)
+
+      if (messagesError) {
+        console.error('Error deleting messages:', messagesError)
+        throw new Error(`Failed to delete messages: ${messagesError.message}`)
+      }
+
+      // Delete match
+      const { error: matchError } = await supabase
+        .from('matches')
+        .delete()
+        .eq('id', matchId)
+
+      if (matchError) {
+        console.error('Error deleting match:', matchError)
+        throw new Error(`Failed to delete match: ${matchError.message}`)
+      }
+
+      // Delete swipe records between both users so they can appear in feeds again
+      const { error: swipe1Error } = await supabase
+        .from('swipes')
+        .delete()
+        .eq('swiper_id', userId)
+        .eq('swiped_id', matchToUnmatch.otherProfile.id)
+
+      const { error: swipe2Error } = await supabase
+        .from('swipes')
+        .delete()
+        .eq('swiper_id', matchToUnmatch.otherProfile.id)
+        .eq('swiped_id', userId)
+
+      if (swipe1Error || swipe2Error) {
+        console.error('Error deleting swipes:', swipe1Error || swipe2Error)
+        // Don't throw error here, swipes deletion is less critical
+      }
+
+      // Remove from local state immediately
+      setMatches(prevMatches => prevMatches.filter(m => m.id !== matchId))
+    } catch (error: any) {
+      console.error('Error unmatching:', error)
+      alert(`Failed to unmatch: ${error.message}`)
+    } finally {
+      setUnmatchingId(null)
+    }
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-pink-50 to-red-50">
@@ -131,11 +198,14 @@ export default function MatchesPage() {
         ) : (
           <div className="space-y-3">
             {matches.map((match) => (
-              <Link
+              <div
                 key={match.id}
-                href={`/chat/${match.id}`}
-                className="block bg-white rounded-xl shadow-sm hover:shadow-md transition p-4"
+                className="relative bg-white rounded-xl shadow-sm hover:shadow-md transition p-4"
               >
+                <Link
+                  href={`/chat/${match.id}`}
+                  className="block"
+                >
                 <div className="flex items-center gap-4">
                   {/* Profile Picture */}
                   <div className="w-16 h-16 rounded-full bg-gradient-to-br from-primary-300 to-primary-500 flex items-center justify-center text-white text-2xl font-bold flex-shrink-0">
@@ -186,7 +256,20 @@ export default function MatchesPage() {
                   {/* Arrow */}
                   <div className="text-gray-400">→</div>
                 </div>
-              </Link>
+                </Link>
+
+                {/* Unmatch button */}
+                <button
+                  onClick={(e) => handleUnmatch(match.id, e)}
+                  disabled={unmatchingId === match.id}
+                  className="absolute top-4 right-4 text-gray-400 hover:text-red-600 transition p-2 disabled:opacity-50"
+                  title="Unmatch"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
             ))}
           </div>
         )}

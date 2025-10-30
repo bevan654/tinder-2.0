@@ -5,10 +5,14 @@ A Tinder-like web application for students to find and connect with study partne
 ## Features
 
 - **User Authentication**: Sign up and log in using email/password or Google OAuth
+- **Session Persistence**: Stay logged in across browser sessions
 - **Profile Management**: Create and edit your profile with name, school, major, subjects, and bio
 - **Swipe Interface**: Tinder-style card swiping to like or pass on potential study partners
 - **Match Detection**: Automatic matching when two users mutually like each other
-- **Real-time Chat**: Live messaging with your matches using Supabase Realtime
+- **Beautiful Match Animation**: Full-screen Tinder-style animation with floating particles and sliding profile cards
+- **Real-time Chat**: Live messaging with your matches (Realtime or polling fallback)
+- **Web Notifications**: Browser notifications for new messages when you're away
+- **Unmatch Functionality**: Remove matches with confirmation modal
 - **Mobile-First Design**: Responsive UI optimized for mobile and desktop
 
 ## Tech Stack
@@ -186,12 +190,21 @@ All database tables have RLS policies ensuring users can only:
 
 Update your Supabase authentication redirect URLs to include your production URL.
 
+## Recent Updates
+
+See [CHANGELOG.md](CHANGELOG.md) for detailed information about recent features:
+- 🎉 Tinder-style match animation with particles and smooth transitions
+- 🔔 Web notifications for new messages
+- 💾 Session persistence across browser restarts
+- 🚫 Unmatch functionality with confirmation
+
 ## Future Enhancements
 
 - Profile photo upload via Supabase Storage
 - Filter by subject, location, or school
 - Typing indicators in chat
-- Push notifications for new matches and messages
+- Message read receipts
+- Online/offline status indicators
 - Video chat integration
 - Study session scheduling
 - User blocking and reporting

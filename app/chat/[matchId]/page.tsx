@@ -4,8 +4,11 @@ import { useState, useEffect, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import Toast from '@/components/Toast'
 import { Database } from '@/types/database.types'
 import { formatDistanceToNow } from 'date-fns'
+import { useNotifications } from '@/lib/hooks/useNotifications'
+import { playSound } from '@/lib/sounds'
 
 type Profile = Database['public']['Tables']['profiles']['Row']
 type Message = Database['public']['Tables']['messages']['Row']
@@ -21,18 +24,40 @@ export default function ChatPage({ params }: { params: { matchId: string } }) {
   const [userId, setUserId] = useState<string | null>(null)
   const [otherProfile, setOtherProfile] = useState<Profile | null>(null)
   const [match, setMatch] = useState<Match | null>(null)
+  const [showUnmatchModal, setShowUnmatchModal] = useState(false)
+  const [unmatching, setUnmatching] = useState(false)
+  const [showToast, setShowToast] = useState(false)
+  const [toastMessage, setToastMessage] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesRef = useRef<Message[]>([])
   const router = useRouter()
   const supabase = createClient()
+  const { permission, requestPermission, sendNotification } = useNotifications()
 
   // Keep messages ref in sync with state
   useEffect(() => {
     messagesRef.current = messages
   }, [messages])
 
+  // Request notification permission on mount
+  useEffect(() => {
+    if (permission === 'default') {
+      requestPermission()
+    }
+  }, [])
+
   useEffect(() => {
     loadChatData()
+  }, [matchId])
+
+  // Start polling and realtime only after user data is loaded
+  useEffect(() => {
+    if (!userId || !otherProfile) {
+      console.log('Waiting for user data to load...', { userId, hasOtherProfile: !!otherProfile })
+      return
+    }
+
+    console.log('User data loaded, starting message listeners')
 
     // Try to subscribe to realtime, but also poll as backup
     const unsubscribe = subscribeToMessages()
@@ -46,7 +71,7 @@ export default function ChatPage({ params }: { params: { matchId: string } }) {
       if (unsubscribe) unsubscribe()
       clearInterval(pollInterval)
     }
-  }, [matchId])
+  }, [userId, otherProfile, matchId])
 
   useEffect(() => {
     scrollToBottom()
@@ -140,6 +165,35 @@ export default function ChatPage({ params }: { params: { matchId: string } }) {
 
         if (newMessages && newMessages.length > 0) {
           setMessages((current) => [...current, ...newMessages])
+
+          // Send notification for new messages from other user
+          newMessages.forEach((msg) => {
+            console.log('📨 New message detected:', {
+              messageSenderId: msg.sender_id,
+              currentUserId: userId,
+              isFromOther: msg.sender_id !== userId,
+              hasOtherProfile: !!otherProfile,
+            })
+
+            if (msg.sender_id !== userId && otherProfile) {
+              console.log('💬 New message from other user, playing sound...')
+              playSound('message')
+              sendNotification(`New message from ${otherProfile.name}`, {
+                body: msg.text,
+                tag: `message-${msg.id}`,
+              })
+              // Show toast if page is visible
+              if (!document.hidden) {
+                setToastMessage(`${otherProfile.name}`)
+                setShowToast(true)
+                setTimeout(() => setShowToast(false), 2000)
+              }
+            } else {
+              console.log('Message from self, skipping notification', {
+                reason: msg.sender_id === userId ? 'sender is self' : 'no other profile',
+              })
+            }
+          })
         }
       }
     } catch (error) {
@@ -160,11 +214,40 @@ export default function ChatPage({ params }: { params: { matchId: string } }) {
             filter: `match_id=eq.${matchId}`,
           },
           (payload) => {
+            const newMsg = payload.new as Message
             setMessages((current) => {
               // Avoid duplicates
-              const exists = current.some(m => m.id === payload.new.id)
+              const exists = current.some(m => m.id === newMsg.id)
               if (exists) return current
-              return [...current, payload.new as Message]
+
+              // Send notification for messages from other user
+              console.log('📨 Realtime message detected:', {
+                messageSenderId: newMsg.sender_id,
+                currentUserId: userId,
+                isFromOther: newMsg.sender_id !== userId,
+                hasOtherProfile: !!otherProfile,
+              })
+
+              if (newMsg.sender_id !== userId && otherProfile) {
+                console.log('💬 New message via realtime, playing sound...')
+                playSound('message')
+                sendNotification(`New message from ${otherProfile.name}`, {
+                  body: newMsg.text,
+                  tag: `message-${newMsg.id}`,
+                })
+                // Show toast if page is visible
+                if (!document.hidden) {
+                  setToastMessage(`${otherProfile.name}`)
+                  setShowToast(true)
+                  setTimeout(() => setShowToast(false), 2000)
+                }
+              } else {
+                console.log('Skipping notification for realtime message', {
+                  reason: newMsg.sender_id === userId ? 'sender is self' : 'no other profile',
+                })
+              }
+
+              return [...current, newMsg]
             })
           }
         )
@@ -202,6 +285,63 @@ export default function ChatPage({ params }: { params: { matchId: string } }) {
       alert('Failed to send message')
     } finally {
       setSending(false)
+    }
+  }
+
+  const handleUnmatch = async () => {
+    if (!matchId || unmatching || !userId || !otherProfile) return
+
+    setUnmatching(true)
+
+    try {
+      // Delete all messages in this match first
+      const { error: messagesError } = await supabase
+        .from('messages')
+        .delete()
+        .eq('match_id', matchId)
+
+      if (messagesError) {
+        console.error('Error deleting messages:', messagesError)
+        throw new Error(`Failed to delete messages: ${messagesError.message}`)
+      }
+
+      // Delete the match
+      const { error: matchError } = await supabase
+        .from('matches')
+        .delete()
+        .eq('id', matchId)
+
+      if (matchError) {
+        console.error('Error deleting match:', matchError)
+        throw new Error(`Failed to delete match: ${matchError.message}`)
+      }
+
+      // Delete swipe records between both users so they can appear in feeds again
+      const { error: swipe1Error } = await supabase
+        .from('swipes')
+        .delete()
+        .eq('swiper_id', userId)
+        .eq('swiped_id', otherProfile.id)
+
+      const { error: swipe2Error } = await supabase
+        .from('swipes')
+        .delete()
+        .eq('swiper_id', otherProfile.id)
+        .eq('swiped_id', userId)
+
+      if (swipe1Error || swipe2Error) {
+        console.error('Error deleting swipes:', swipe1Error || swipe2Error)
+        // Don't throw error here, swipes deletion is less critical
+      }
+
+      // Redirect to matches page after successful deletion
+      router.push('/matches')
+      router.refresh()
+    } catch (error: any) {
+      console.error('Error unmatching:', error)
+      alert(`Failed to unmatch: ${error.message}`)
+      setUnmatching(false)
+      setShowUnmatchModal(false)
     }
   }
 
@@ -249,6 +389,23 @@ export default function ChatPage({ params }: { params: { matchId: string } }) {
                   <p className="text-sm text-gray-600">{otherProfile.school}</p>
                 )}
               </div>
+
+              <button
+                onClick={() => playSound('message')}
+                className="text-gray-400 hover:text-primary-600 transition mr-2"
+                title="Test sound"
+              >
+                🔊
+              </button>
+              <button
+                onClick={() => setShowUnmatchModal(true)}
+                className="text-gray-400 hover:text-red-600 transition"
+                title="Unmatch"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </>
           )}
         </div>
@@ -322,6 +479,45 @@ export default function ChatPage({ params }: { params: { matchId: string } }) {
           </button>
         </form>
       </div>
+
+      {/* Unmatch Confirmation Modal */}
+      {showUnmatchModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4">
+              Unmatch with {otherProfile?.name}?
+            </h2>
+            <p className="text-gray-600 mb-6">
+              This will delete your conversation and swipe history. You may see each other in the swipe feed again. This action cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowUnmatchModal(false)}
+                disabled={unmatching}
+                className="flex-1 px-4 py-3 bg-gray-100 text-gray-700 rounded-lg font-semibold hover:bg-gray-200 transition disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleUnmatch}
+                disabled={unmatching}
+                className="flex-1 px-4 py-3 bg-red-600 text-white rounded-lg font-semibold hover:bg-red-700 transition disabled:opacity-50"
+              >
+                {unmatching ? 'Unmatching...' : 'Unmatch'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      <Toast
+        show={showToast}
+        message={toastMessage}
+        icon="💬"
+        duration={2000}
+        onClose={() => setShowToast(false)}
+      />
     </div>
   )
 }

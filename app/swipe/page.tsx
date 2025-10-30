@@ -4,8 +4,12 @@ import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import SwipeCard from '@/components/SwipeCard'
+import MatchAnimation from '@/components/MatchAnimation'
+import Toast from '@/components/Toast'
 import Link from 'next/link'
 import { Database } from '@/types/database.types'
+import { playSound } from '@/lib/sounds'
+import { useUnreadCount } from '@/lib/hooks/useUnreadCount'
 
 type Profile = Database['public']['Tables']['profiles']['Row']
 
@@ -14,10 +18,14 @@ export default function SwipePage() {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [loading, setLoading] = useState(true)
   const [userId, setUserId] = useState<string | null>(null)
+  const [currentUserProfile, setCurrentUserProfile] = useState<Profile | null>(null)
   const [showMatch, setShowMatch] = useState(false)
   const [matchedProfile, setMatchedProfile] = useState<Profile | null>(null)
+  const [showToast, setShowToast] = useState(false)
+  const [toastMessage, setToastMessage] = useState('')
   const router = useRouter()
   const supabase = createClient()
+  const unreadCount = useUnreadCount(userId)
 
   useEffect(() => {
     loadProfiles()
@@ -44,6 +52,8 @@ export default function SwipePage() {
         router.push('/profile/setup')
         return
       }
+
+      setCurrentUserProfile(userProfile)
 
       // Get all swipes by this user
       const { data: swipes } = await supabase
@@ -95,22 +105,48 @@ export default function SwipePage() {
 
       if (swipeError) throw swipeError
 
-      // If right swipe, check for match
+      // If right swipe, check if a match was created by the database trigger
       if (direction === 'right') {
-        const { data: reciprocalSwipe } = await supabase
-          .from('swipes')
-          .select('*')
-          .eq('swiper_id', swipedProfile.id)
-          .eq('swiped_id', userId)
-          .eq('direction', 'right')
-          .single()
+        console.log('Checking for match...')
+        console.log('Current user:', userId)
+        console.log('Swiped user:', swipedProfile.id)
 
-        if (reciprocalSwipe) {
+        // Small delay to let the database trigger finish
+        await new Promise(resolve => setTimeout(resolve, 500))
+
+        // Check if a match exists between these users
+        const smallerId = userId < swipedProfile.id ? userId : swipedProfile.id
+        const largerId = userId < swipedProfile.id ? swipedProfile.id : userId
+
+        const { data: matchExists, error: matchError } = await supabase
+          .from('matches')
+          .select('*')
+          .eq('user1_id', smallerId)
+          .eq('user2_id', largerId)
+          .maybeSingle()
+
+        console.log('Match found:', matchExists)
+        console.log('Match error:', matchError)
+
+        if (matchExists) {
           // It's a match!
+          console.log('🎉 MATCH DETECTED! Playing animation...')
+          playSound('match')
           setMatchedProfile(swipedProfile)
           setShowMatch(true)
-          setTimeout(() => setShowMatch(false), 3000)
+        } else {
+          console.log('No match yet - waiting for them to swipe back')
         }
+      } else {
+        // Play swipe sound for left swipes too
+        playSound('swipe')
+      }
+
+      // Show toast notification
+      if (direction === 'right') {
+        setToastMessage(`You liked ${swipedProfile.name}`)
+        setShowToast(true)
+        setTimeout(() => setShowToast(false), 2000)
       }
 
       // Move to next profile
@@ -146,9 +182,14 @@ export default function SwipePage() {
           <div className="flex gap-4">
             <Link
               href="/matches"
-              className="px-4 py-2 bg-primary-100 text-primary-700 rounded-lg font-semibold hover:bg-primary-200 transition"
+              className="relative px-4 py-2 bg-primary-100 text-primary-700 rounded-lg font-semibold hover:bg-primary-200 transition"
             >
               💬 Matches
+              {unreadCount > 0 && (
+                <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center animate-pulse">
+                  {unreadCount}
+                </span>
+              )}
             </Link>
             <Link
               href="/profile/edit"
@@ -214,26 +255,21 @@ export default function SwipePage() {
         )}
       </div>
 
-      {/* Match Modal */}
-      {showMatch && matchedProfile && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl p-8 max-w-md w-full text-center animate-bounce">
-            <div className="text-6xl mb-4">🎉</div>
-            <h2 className="text-3xl font-bold text-primary-600 mb-2">
-              It&apos;s a Match!
-            </h2>
-            <p className="text-gray-700 mb-6">
-              You and {matchedProfile.name} both liked each other!
-            </p>
-            <Link
-              href="/matches"
-              className="px-6 py-3 bg-primary-600 text-white rounded-full font-semibold hover:bg-primary-700 transition inline-block"
-            >
-              Send a Message
-            </Link>
-          </div>
-        </div>
-      )}
+      {/* Match Animation */}
+      <MatchAnimation
+        show={showMatch}
+        currentUserProfile={currentUserProfile}
+        matchedProfile={matchedProfile}
+        onClose={() => setShowMatch(false)}
+      />
+
+      {/* Toast Notification */}
+      <Toast
+        show={showToast}
+        message={toastMessage}
+        icon="❤️"
+        onClose={() => setShowToast(false)}
+      />
     </div>
   )
 }
