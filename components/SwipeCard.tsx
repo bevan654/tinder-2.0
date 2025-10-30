@@ -9,7 +9,7 @@ type Profile = Database['public']['Tables']['profiles']['Row']
 interface SwipeCardProps {
   profile: Profile
   onSwipe: (direction: 'left' | 'right') => void
-  style?: React.CSSProperties
+  style?: any
 }
 
 export default function SwipeCard({ profile, onSwipe, style }: SwipeCardProps) {

@@ -220,7 +220,7 @@ export default function SwipePage() {
           <div className="bg-white rounded-2xl p-8 max-w-md w-full text-center animate-bounce">
             <div className="text-6xl mb-4">🎉</div>
             <h2 className="text-3xl font-bold text-primary-600 mb-2">
-              It's a Match!
+              It&apos;s a Match!
             </h2>
             <p className="text-gray-700 mb-6">
               You and {matchedProfile.name} both liked each other!
